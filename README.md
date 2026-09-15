@@ -77,7 +77,19 @@ git-ignored; it is re-downloadable so the repository stays self-contained.
 
 ## Usage
 
-All stages run as single-folder modules from the repository root.
+All stages run as single-folder modules **from the repository root**:
+
+```bash
+cd face-recognition-5pt
+source .venv/bin/activate
+```
+
+Or, from *any* directory, use the included launcher (resolves the repo root
+and the project virtualenv for you):
+
+```bash
+bash face-recognition-5pt/scripts/run.sh track    # -> python -m src.track
+```
 
 Detect and inspect each stage:
 
@@ -114,6 +126,10 @@ template automatically.
 ```bash
 python -m src.recognize
 ```
+
+> Note: if you get `ModuleNotFoundError: No module named 'src'`, you are running
+> from the wrong folder — switch into the repository root first, or use
+> `bash scripts/run.sh recognize`.
 
 | key | action |
 | --- | --- |
