@@ -1,0 +1,21 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Generated data
+data/
+tests/data/
+models/*.onnx
+
+# OS noise
+.DS_Store
+
+# Local scratch
+photos/
+book/

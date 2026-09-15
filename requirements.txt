@@ -1,0 +1,7 @@
+numpy>=1.24,<2
+mediapipe==0.10.21
+opencv-contrib-python>=4.8,<5
+onnxruntime>=1.16
+scipy>=1.10
+tqdm>=4.66
+pytest>=7.4
