@@ -1,10 +1,12 @@
-# Face Recognition with ArcFace (ONNX) and 5-Point Alignment
+# FaceLocking
 
-A self-contained, CPU-friendly face recognition system: Haar cascade detection,
-MediaPipe FaceMesh 5-point landmarks, similarity-transform alignment onto the
+Face recognition with ArcFace (ONNX) and 5-point alignment.
+
+A self-contained, CPU-friendly face recognition system: MediaPipe FaceMesh
+detection and 5-point landmarks, similarity-transform alignment onto the
 standard ArcFace template, and ResNet-50 (w600k) embedding extraction through
-ONNX Runtime. Multi-identity enrollment and live recognition are provided as
-small, composable command-line applications.
+ONNX Runtime. Multi-identity enrollment, live recognition, and pan/tilt face
+tracking are provided as small, composable command-line applications.
 
 This is the Week-01 practical submission for the cloud / face-recognition
 course by Gabriel Baziramwabo (Benax Technologies).
@@ -80,7 +82,7 @@ git-ignored; it is re-downloadable so the repository stays self-contained.
 All stages run as single-folder modules **from the repository root**:
 
 ```bash
-cd face-recognition-5pt
+cd FaceLocking
 source .venv/bin/activate
 ```
 
@@ -88,7 +90,7 @@ Or, from *any* directory, use the included launcher (resolves the repo root
 and the project virtualenv for you):
 
 ```bash
-bash face-recognition-5pt/scripts/run.sh track    # -> python -m src.track
+bash FaceLocking/scripts/run.sh track    # -> python -m src.track
 ```
 
 Detect and inspect each stage:
@@ -210,7 +212,7 @@ smoothed face box either way.
 ## Repository layout
 
 ```
-face-recognition-5pt/
+FaceLocking/
   init_project.py          project scaffold generator
   src/                     pipeline modules (run with python -m src.<module>)
   scripts/download_models.sh

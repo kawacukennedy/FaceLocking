@@ -17,13 +17,15 @@ STRUCTURE = {
         "recognize.py",
         "evaluate.py",
         "haar_5pt.py",
+        "tracker.py",
+        "track.py",
     ],
     "tests": [],
     "scripts": [],
     "book": [],
 }
 
-PROJECT_NAME = "face-recognition-5pt"
+PROJECT_NAME = "FaceLocking"
 
 
 def main() -> None:
