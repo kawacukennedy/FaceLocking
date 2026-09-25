@@ -265,10 +265,12 @@ class Haar5ptDetector:
         height, width = roi_bgr.shape[:2]
         if height < 20 or width < 20:
             return None
-        roi, scale = roi_bgr, 1.0
+        roi = roi_bgr
         if max(height, width) < 120:
-            scale = max(2.0, 120.0 / max(height, width))
-            scale_roi = min(scale, 4.0)
+            # Far-away faces land in a tiny ROI; FaceMesh is more reliable on
+            # a larger crop. The resize factor cancels out when the normalized
+            # landmarks are mapped back with the original ROI size.
+            scale_roi = min(4.0, max(2.0, 120.0 / max(height, width)))
             roi = cv2.resize(
                 roi_bgr,
                 None,
@@ -282,6 +284,10 @@ class Haar5ptDetector:
             return None
         landmarks = result.multi_face_landmarks[0].landmark
         indices = [IDX_LEFT_EYE, IDX_RIGHT_EYE, IDX_NOSE_TIP, IDX_MOUTH_LEFT, IDX_MOUTH_RIGHT]
+        points = [
+            (landmarks[i].x * width, landmarks[i].y * height)
+            for i in indices
+        ]
         kps = np.array(points, dtype=np.float32)
         if kps[0, 0] > kps[1, 0]:
             kps[[0, 1]] = kps[[1, 0]]

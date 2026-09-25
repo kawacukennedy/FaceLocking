@@ -33,18 +33,30 @@ FRAMERATE = 30
 
 # Environment overrides (handy when hardware changes):
 #   PYCAMERA_DEVICE  pick the avfoundation device whose name contains this text
-#   PYCAMERA_FLIP    "0"/"false" disables the 180 degree rotation, "1"/"true"
-#                    forces it, "auto" (default) rotates non built-in cameras
+#   PYCAMERA_FLIP    "1"/"true" rotates frames by 180 degrees, "0" keeps them
+#                    as captured (default)
 DEVICE_ENV = "PYCAMERA_DEVICE"
 FLIP_ENV = "PYCAMERA_FLIP"
 
+# Names that mean "not a USB camera": the laptop's own camera, screen/screen
+# recording sources, and software (virtual) cameras. Any device whose name does
+# not match one of these markers is treated as an external USB camera.
 BUILTIN_DEVICE_MARKERS = (
     "facetime",
     "built-in",
     "built in",
     "capture screen",
+    "screen capture",
     "display",
     "virtual",
+    "continuity",
+    "iphone",
+    "ipad",
+    "droidcam",
+    "epoccam",
+    "manycam",
+    "snap camera",
+    "obs",
 )
 
 
@@ -81,16 +93,25 @@ def ffmpeg_device_names() -> List[Tuple[int, str]]:
     return devices
 
 
+def external_device_names() -> List[Tuple[int, str]]:
+    """Return ``(index, name)`` pairs for external (USB) video devices."""
+    return [(i, n) for i, n in ffmpeg_device_names() if not is_builtin_camera_name(n)]
+
+
 def auto_camera_index() -> int:
-    """Pick the most suitable webcam index.
+    """Pick the external (USB) camera to use, never the built-in one.
 
     Preference order:
-    1. The device whose name contains ``PYCAMERA_DEVICE`` when that variable
-       is set (lets you pin the external HD camera explicitly).
-    2. The first avfoundation video device that is not a built-in camera
-       (USB webcams show up as such, e.g. ``Wed Camera``).
-    3. The first camera that OpenCV can open and that returns non-black frames.
-    4. Index ``1`` as a last resort.
+    1. The device whose name contains ``PYCAMERA_DEVICE`` when that variable is
+       set, so any USB camera can be pinned by name.
+    2. The first avfoundation video device that is not a built-in, screen or
+       virtual camera (USB webcams show up as such, e.g. ``Wed Camera``).
+
+    Raises:
+        RuntimeError: if ``PYCAMERA_DEVICE`` does not match any device, or if
+            only built-in/screen devices are connected. The built-in camera is
+            never selected silently; connect a USB camera or set
+            ``PYCAMERA_DEVICE`` explicitly.
     """
     devices = ffmpeg_device_names()
     wanted = os.environ.get(DEVICE_ENV, "").strip().lower()
@@ -98,9 +119,24 @@ def auto_camera_index() -> int:
         for index, name in devices:
             if wanted in name.lower():
                 return index
-    for index, name in devices:
-        if not is_builtin_camera_name(name):
-            return index
+        available = [f"{i}:{n}" for i, n in devices] or ["<none detected>"]
+        raise RuntimeError(
+            f"{DEVICE_ENV}={wanted!r} matched no camera. Available: {available}"
+        )
+
+    externals = external_device_names()
+    if externals:
+        return externals[0][0]
+
+    if devices:
+        # ffmpeg can enumerate, so we know what is there and none of it is USB.
+        raise RuntimeError(
+            "No external camera connected; only built-in/screen devices found: "
+            + ", ".join(f"{i}:{n}" for i, n in devices)
+            + ". Plug in a USB camera (or set PYCAMERA_DEVICE=<name>)."
+        )
+
+    # Device names unavailable (ffmpeg missing): fall back to probing indices.
     for index in range(4):
         cap = cv2.VideoCapture(index)
         if not cap.isOpened():
@@ -312,10 +348,14 @@ class Camera:
         """One-line summary of the active device, for demo startup banners."""
         kind = "built-in" if is_builtin_camera_name(self.device_name) else "external"
         flip = "ON (rotated 180)" if self.value_flip else "OFF"
-        return (
+        line = (
             f"Camera: '{self.device_name}' [index {self.index}, {kind}] "
             f"backend={self.backend} flip={flip}"
         )
+        others = [n for i, n in external_device_names() if i != self.index]
+        if others:
+            line += f" | other USB cameras: {', '.join(others)} (set {DEVICE_ENV}=<name>)"
+        return line
 
     def release(self) -> None:
         if self._cv is not None:
@@ -334,14 +374,23 @@ class Camera:
 
 def main() -> None:
     """Live camera validation. Press 'q' to exit."""
-    available = list_camera_indices()
     names = ffmpeg_device_names()
-    print("Cameras found:")
-    name_by_index = dict(names)
-    for index, backend, w, h in available:
-        name = name_by_index.get(index, f"<unnamed index {index}>")
-        print(f"  index {index}: {name} ({backend}) {w}x{h}")
-    index = auto_camera_index()
+    print("Cameras found (USB cameras are preferred over the built-in one):")
+    if names:
+        for index, name in names:
+            kind = "built-in/screen" if is_builtin_camera_name(name) else "external USB"
+            print(f"  index {index}: {name} [{kind}]")
+    else:
+        print("  <ffmpeg unavailable, device names unknown>")
+    for index, backend, w, h in list_camera_indices():
+        name = dict(names).get(index, "<unnamed>")
+        print(f"  opencv check: index {index} ({name}) {backend} {w}x{h}")
+
+    try:
+        index = auto_camera_index()
+    except RuntimeError as exc:
+        print(f"Cannot select a camera: {exc}")
+        return
     with Camera(index=index) as camera:
         print(camera.describe())
         print("Press 'f' to toggle the 180 degree rotation, 'q' to quit.")

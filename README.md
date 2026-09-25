@@ -164,11 +164,22 @@ they are unavailable.
 
 ## Camera notes
 
-`src/camera.py` enumerates the avfoundation devices with `ffmpeg` and prefers
-the first **external** camera over the laptop's built-in one, so the external
-HD camera is used regardless of the index macOS assigns. Set
-`PYCAMERA_DEVICE=Wed` to pin a specific device by name. Every demo prints the
-device it opened on startup:
+`src/camera.py` enumerates the avfoundation devices with `ffmpeg` and always
+selects an **external USB camera** — the laptop's built-in camera, screen
+capture sources and virtual cameras are recognized by name and never picked
+automatically. Any USB camera works; indices move between boots, names do not,
+so selection is name-based:
+
+- `PYCAMERA_DEVICE="<name fragment>"` pins a specific camera, e.g.
+  `PYCAMERA_DEVICE=Wed python -m src.enroll`.
+- If several USB cameras are connected, the first is used and the others are
+  listed in the startup banner.
+- If only built-in/screen devices exist, the demos stop with a clear message
+  instead of quietly using the built-in camera.
+- `python -m src.camera` lists every device with its index, name and
+  external/built-in classification.
+
+Every demo prints the device it opened on startup:
 
 ```
 Camera: 'Wed Camera' [index 1, external] backend=opencv flip=OFF
@@ -185,7 +196,7 @@ device name) and can be changed in three ways:
 Some USB cameras return all-black frames from the OpenCV backend; in that case
 `Camera` warms up, detects the black frames (`mean brightness < 3.0`), and
 transparently switches to an `ffmpeg` raw `bgr24` pipe, which yields healthy
-frames. The built-in FaceTime camera works with either backend.
+frames.
 
 ## Pan / tilt tracking (`src/track.py`)
 
