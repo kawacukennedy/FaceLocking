@@ -20,7 +20,8 @@ def main() -> None:
 
     detector = Haar5ptDetector(debug=False)
     with Camera() as camera:
-        print("5pt landmarks. Press 'q' to quit.")
+        print("5pt landmarks. Press 'f' to flip, 'q' to quit.")
+        print(camera.describe())
         while True:
             ok, frame = camera.read()
             if not ok:
@@ -34,8 +35,11 @@ def main() -> None:
                     cv2.circle(vis, (int(px), int(py)), 4, (0, 255, 0), -1)
             cv2.putText(vis, "5pt", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
             cv2.imshow("5pt Landmarks", vis)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            elif key == ord("f"):
+                camera.toggle_flip()
 
 
 if __name__ == "__main__":

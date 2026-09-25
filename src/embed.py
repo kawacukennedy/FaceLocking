@@ -150,7 +150,8 @@ def main() -> None:
     prev_emb: Optional[np.ndarray] = None
 
     with Camera() as camera:
-        print("Embedding demo running. q=quit, p=print embedding.")
+        print("Embedding demo running. q=quit, p=print embedding, f=flip.")
+        print(camera.describe())
         while True:
             ok, frame = camera.read()
             if not ok:
@@ -186,6 +187,8 @@ def main() -> None:
                 print(" dim:", prev_emb.size)
                 print(" min/max:", prev_emb.min(), prev_emb.max())
                 print(" first10:", prev_emb[:10])
+            elif key == ord("f"):
+                camera.toggle_flip()
 
 
 if __name__ == "__main__":

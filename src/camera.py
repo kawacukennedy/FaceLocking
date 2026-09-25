@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import re
 import shutil
 import subprocess
@@ -29,6 +30,13 @@ WARMUP_FRAMES = 8
 DEFAULT_WIDTH = 1280
 DEFAULT_HEIGHT = 720
 FRAMERATE = 30
+
+# Environment overrides (handy when hardware changes):
+#   PYCAMERA_DEVICE  pick the avfoundation device whose name contains this text
+#   PYCAMERA_FLIP    "0"/"false" disables the 180 degree rotation, "1"/"true"
+#                    forces it, "auto" (default) rotates non built-in cameras
+DEVICE_ENV = "PYCAMERA_DEVICE"
+FLIP_ENV = "PYCAMERA_FLIP"
 
 BUILTIN_DEVICE_MARKERS = (
     "facetime",
@@ -77,12 +85,20 @@ def auto_camera_index() -> int:
     """Pick the most suitable webcam index.
 
     Preference order:
-    1. The first avfoundation video device that is not a built-in camera
+    1. The device whose name contains ``PYCAMERA_DEVICE`` when that variable
+       is set (lets you pin the external HD camera explicitly).
+    2. The first avfoundation video device that is not a built-in camera
        (USB webcams show up as such, e.g. ``Wed Camera``).
-    2. The first camera that OpenCV can open and that returns non-black frames.
-    3. Index ``1`` as a last resort.
+    3. The first camera that OpenCV can open and that returns non-black frames.
+    4. Index ``1`` as a last resort.
     """
-    for index, name in ffmpeg_device_names():
+    devices = ffmpeg_device_names()
+    wanted = os.environ.get(DEVICE_ENV, "").strip().lower()
+    if wanted:
+        for index, name in devices:
+            if wanted in name.lower():
+                return index
+    for index, name in devices:
         if not is_builtin_camera_name(name):
             return index
     for index in range(4):
@@ -99,6 +115,18 @@ def auto_camera_index() -> int:
         if means and max(means) >= BLACK_FRAME_MEAN:
             return index
     return 1
+
+
+def auto_flip_enabled(index: int) -> bool:
+    """Whether frames from ``index`` should be rotated 180 degrees.
+
+    Orientation follows the physical mount, which can change at any time, so
+    the default is *no rotation*. Force it with ``PYCAMERA_FLIP=1`` (disable
+    again with ``PYCAMERA_FLIP=0``); every demo also accepts the ``f`` key to
+    toggle the rotation live.
+    """
+    override = os.environ.get(FLIP_ENV, "").strip().lower()
+    return override in {"1", "true", "yes", "on"}
 
 
 def list_camera_indices(max_devices: int = 6) -> list:
@@ -187,12 +215,16 @@ class FFmpegFrameReader:
 class Camera:
     """Unified camera reader that never returns systematically black frames.
 
-    The face-tracking rig mounts its USB camera upside-down; :class:`Camera`
-    detects that device and rotates its frames 180 degrees so the pipeline sees
-    an upright image (``flip`` can force or freeze this).
+    The external USB camera is preferred over the laptop's built-in one, and
+    its orientation can be corrected with a 180 degree rotation when the mount
+    is installed upside down. Rotation is off by default because it follows the
+    physical mount, not the device name; use ``PYCAMERA_FLIP=1``, the ``flip``
+    argument, or the ``f`` key in the demos to enable it.
 
     Attributes:
         backend: ``"opencv"`` or ``"ffmpeg"``, whichever is actually in use.
+        device_name: avfoundation name of the active device.
+        value_flip: whether frames are currently rotated 180 degrees.
         fps: Measured frame rate of the active reader (float, or None).
     """
 
@@ -217,12 +249,10 @@ class Camera:
         self._ff: Optional[FFmpegFrameReader] = None
         self._t0 = time.time()
         self._n = 0
+        self.device_name = dict(ffmpeg_device_names()).get(self.index, f"index {self.index}")
 
         if flip is None:
-            name_by_index = dict(ffmpeg_device_names())
-            self.value_flip = not is_builtin_camera_name(
-                name_by_index.get(self.index, "")
-            )
+            self.value_flip = auto_flip_enabled(self.index)
         else:
             self.value_flip = bool(flip)
 
@@ -273,6 +303,20 @@ class Camera:
         elapsed = time.time() - self._t0
         return self._n / elapsed if elapsed > 0 else 0.0
 
+    def toggle_flip(self) -> bool:
+        """Flip the 180 degree rotation on/off and return the new state."""
+        self.value_flip = not self.value_flip
+        return self.value_flip
+
+    def describe(self) -> str:
+        """One-line summary of the active device, for demo startup banners."""
+        kind = "built-in" if is_builtin_camera_name(self.device_name) else "external"
+        flip = "ON (rotated 180)" if self.value_flip else "OFF"
+        return (
+            f"Camera: '{self.device_name}' [index {self.index}, {kind}] "
+            f"backend={self.backend} flip={flip}"
+        )
+
     def release(self) -> None:
         if self._cv is not None:
             self._cv.release()
@@ -298,9 +342,9 @@ def main() -> None:
         name = name_by_index.get(index, f"<unnamed index {index}>")
         print(f"  index {index}: {name} ({backend}) {w}x{h}")
     index = auto_camera_index()
-    name = name_by_index.get(index, f"index {index}")
     with Camera(index=index) as camera:
-        print(f"Using: {name} (index {index}, backend {camera.backend}). Press 'q' to quit.")
+        print(camera.describe())
+        print("Press 'f' to toggle the 180 degree rotation, 'q' to quit.")
         t0, n = time.time(), 0
         while True:
             ok, frame = camera.read()
@@ -313,8 +357,11 @@ def main() -> None:
                 print(f"FPS: {n / elapsed:.1f}")
                 n, t0 = 0, time.time()
             cv2.imshow("Camera Test", frame)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            elif key == ord("f"):
+                print(f"flip={'ON (rotated 180)' if camera.toggle_flip() else 'OFF'}")
 
 
 if __name__ == "__main__":

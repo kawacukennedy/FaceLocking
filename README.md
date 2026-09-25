@@ -163,10 +163,22 @@ they are unavailable.
 ## Camera notes
 
 `src/camera.py` enumerates the avfoundation devices with `ffmpeg` and prefers
-the first non-built-in camera (a USB webcam) over the laptop's built-in one,
-so the same code works on machines where USB indices change between boots.
-Non-built-in cameras are typically mounted upside down, so `Camera()` flips
-their frames by 180° automatically (`flip="auto"`).
+the first **external** camera over the laptop's built-in one, so the external
+HD camera is used regardless of the index macOS assigns. Set
+`PYCAMERA_DEVICE=Wed` to pin a specific device by name. Every demo prints the
+device it opened on startup:
+
+```
+Camera: 'Wed Camera' [index 1, external] backend=opencv flip=OFF
+```
+
+The camera can be mounted upside down, so frames can optionally be rotated 180
+degrees. Rotation is **off by default** (it follows the physical mount, not the
+device name) and can be changed in three ways:
+
+- press `f` in any demo to toggle it live,
+- `PYCAMERA_FLIP=1 python -m src.enroll` to force it on,
+- `Camera(flip=True)` in code.
 
 Some USB cameras return all-black frames from the OpenCV backend; in that case
 `Camera` warms up, detects the black frames (`mean brightness < 3.0`), and

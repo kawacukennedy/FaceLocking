@@ -13,6 +13,7 @@ Controls:
     a      toggle auto-capture
     s      save the enrollment template
     r      reset NEW samples (existing crops on disk are kept)
+    f      toggle the 180 degree image rotation
     q      quit
 """
 
@@ -160,13 +161,14 @@ def main() -> None:
         cv2.namedWindow(cfg.window_aligned, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(cfg.window_aligned, 240, 240)
 
-        print("\nEnrollment started.")
         if base_samples:
             print(f"Re-enroll mode: found {len(base_samples)} existing samples in {person_dir}/")
         print("Tip: keep lighting stable, move slightly left/right, use different expressions.")
-        print("Controls: SPACE=capture, a=auto, s=save, r=reset NEW, q=quit\n")
+        print("Controls: SPACE=capture, a=auto, s=save, r=reset NEW, f=flip, q=quit\n")
 
         try:
+            print(camera.describe())
+            print("\nEnrollment started.")
             while True:
                 ok, frame = camera.read()
                 if not ok:
@@ -205,6 +207,10 @@ def main() -> None:
                 elif key == ord("r"):
                     new_samples.clear()
                     status_msg = "NEW samples reset (existing kept)."
+                elif key == ord("f"):
+                    status_msg = (
+                        "Flip ON (rotated 180)." if camera.toggle_flip() else "Flip OFF."
+                    )
                 elif key == ord(" "):
                     if aligned is None:
                         status_msg = "No face detected. Not captured."

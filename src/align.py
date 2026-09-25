@@ -35,7 +35,8 @@ def main(out_size: Tuple[int, int] = (112, 112)) -> None:
     last_aligned = np.zeros((out_h, out_w, 3), dtype=np.uint8)
 
     with Camera() as camera:
-        print("align running. q=quit, s=save aligned face.")
+        print("align running. q=quit, s=save aligned face, f=flip.")
+        print(camera.describe())
         while True:
             ok, frame = camera.read()
             if not ok:
@@ -65,6 +66,8 @@ def main(out_size: Tuple[int, int] = (112, 112)) -> None:
                 out_path = save_dir / f"{int(time.time() * 1000)}.jpg"
                 cv2.imwrite(str(out_path), last_aligned)
                 print(f"[align] saved: {out_path}")
+            elif key == ord("f"):
+                camera.toggle_flip()
 
 
 if __name__ == "__main__":

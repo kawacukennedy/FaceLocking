@@ -23,7 +23,8 @@ def main() -> None:
 
     cascade = build_cascade()
     with Camera() as camera:
-        print("Haar face detect (minimal). Press 'q' to quit.")
+        print("Haar face detect (minimal). Press 'f' to flip, 'q' to quit.")
+        print(camera.describe())
         while True:
             ok, frame = camera.read()
             if not ok:
@@ -35,8 +36,11 @@ def main() -> None:
             for (x, y, w, h) in faces:
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.imshow("Face Detection", frame)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            elif key == ord("f"):
+                camera.toggle_flip()
 
 
 if __name__ == "__main__":

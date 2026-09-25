@@ -94,7 +94,8 @@ def main() -> None:
     matcher = FaceDBMatcher(load_db_npz(db_path), dist_thresh=DEFAULT_DIST_THRESHOLD)
 
     with Camera() as camera:
-        print("Recognize (multi-face). q=quit, r=reload DB, +/- threshold, d=debug overlay")
+        print("Recognize (multi-face). q=quit, r=reload DB, +/- threshold, d=debug overlay, f=flip")
+        print(camera.describe())
         show_debug = False
         t0, frames, fps = time.time(), 0, None
         while True:
@@ -166,6 +167,9 @@ def main() -> None:
             elif key == ord("d"):
                 show_debug = not show_debug
                 print(f"[recognize] debug overlay: {'ON' if show_debug else 'OFF'}")
+            elif key == ord("f"):
+                state = camera.toggle_flip()
+                print(f"[recognize] flip={'ON (rotated 180)' if state else 'OFF'}")
 
 
 if __name__ == "__main__":

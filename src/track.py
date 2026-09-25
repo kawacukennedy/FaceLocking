@@ -8,6 +8,7 @@ Controls:
     q  quit
     s  toggle search mode explicitly
     c  re-center the mount
+    f  toggle the 180 degree image rotation
 """
 
 from __future__ import annotations
@@ -39,7 +40,8 @@ def main() -> None:
         tracker.motor = None
 
     with Camera() as camera:
-        print("Tracking started. q=quit, s=search, c=center.")
+        print(camera.describe())
+        print("Tracking started. q=quit, s=search, c=center, f=flip.")
         t0 = time.time()
         while True:
             ok, frame = camera.read()
@@ -86,6 +88,8 @@ def main() -> None:
             elif key == ord("c"):
                 if tracker.motor is not None:
                     tracker.motor.center()
+            elif key == ord("f"):
+                camera.toggle_flip()
 
     if tracker.motor is not None:
         tracker.motor.close()

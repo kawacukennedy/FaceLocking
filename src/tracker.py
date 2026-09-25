@@ -335,7 +335,11 @@ def main() -> None:
     except RuntimeError as exc:
         print(f"Motor unavailable: {exc}")
         return
-    print(f"Motor OK on {motor.protocol.ser.port}")
+    print(f"Motor available: {'OK' if motor.ok else 'unavailable'}")
+    if not motor.ok:
+        print(f"  last error: {motor.last_error}")
+    if not motor.ok:
+        return
     for step in (-400, 0, 400, 0):
         motor.move(SERVO_CENTER + step, SERVO_CENTER, slew_limit=50)
         time.sleep(0.6)
