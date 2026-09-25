@@ -9,6 +9,11 @@ Controls:
     +  loosen the distance threshold (accept more)
     -  tighten the distance threshold (accept fewer)
     d  toggle the debug overlay
+    f  toggle the 180 degree image rotation
+
+The overlay states the current scenario explicitly: ``NO FACE IN FRAME`` when
+nobody is visible, a green name for an enrolled identity, and ``Unknown`` for
+a face that does not match the database.
 """
 
 from __future__ import annotations
@@ -25,7 +30,11 @@ from .embed import ArcFaceEmbedderONNX, DEFAULT_MODEL_PATH, cosine_similarity
 from .haar_5pt import Haar5ptDetector, align_face_5pt
 
 DEFAULT_DB_PATH = Path("data/db/face_db.npz")
-DEFAULT_DIST_THRESHOLD = 0.34
+# Calibrated from live measurements: enrolled identities match at a cosine
+# distance of ~0.05, while a mismatched face lands around 0.4 and above, so
+# 0.20 separates the two with a wide margin. Tune live with +/- or with
+# `python -m src.evaluate` once two or more identities are enrolled.
+DEFAULT_DIST_THRESHOLD = 0.20
 
 
 @dataclass
@@ -148,6 +157,14 @@ def main() -> None:
             if fps is not None:
                 header += f" fps={fps:.1f}"
             cv2.putText(vis, header, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+
+            if not matcher.names:
+                state, state_color = "EMPTY DATABASE - enroll someone first", (0, 0, 255)
+            elif not faces:
+                state, state_color = "NO FACE IN FRAME", (0, 255, 255)
+            else:
+                state, state_color = f"{len(faces)} FACE(S) DETECTED", (0, 255, 0)
+            cv2.putText(vis, state, (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.8, state_color, 2)
             cv2.imshow("recognize", vis)
 
             key = cv2.waitKey(1) & 0xFF

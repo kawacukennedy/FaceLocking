@@ -37,7 +37,7 @@ for unit vectors). Database defaults:
 | identity templates | `data/db/face_db.npz` |
 | database metadata | `data/db/face_db.json` |
 | aligned enrollment crops | `data/enroll/<name>/*.jpg` |
-| recognition threshold (dist) | `0.34` (tunable live with `+` / `-`) |
+| recognition threshold (dist) | `0.20` (tunable live with `+` / `-`) |
 
 ## Components
 
