@@ -5,8 +5,9 @@ Face recognition with ArcFace (ONNX) and 5-point alignment.
 A self-contained, CPU-friendly face recognition system: MediaPipe FaceMesh
 detection and 5-point landmarks, similarity-transform alignment onto the
 standard ArcFace template, and ResNet-50 (w600k) embedding extraction through
-ONNX Runtime. Multi-identity enrollment, live recognition, and pan/tilt face
-tracking are provided as small, composable command-line applications.
+ONNX Runtime. Multi-identity enrollment, live recognition with smile and blink
+detection, and smooth pan/tilt face tracking are provided as small, composable
+command-line applications.
 
 This is the Week-01 practical submission for the cloud / face-recognition
 course by Gabriel Baziramwabo (Benax Technologies).
@@ -51,10 +52,12 @@ for unit vectors). Database defaults:
 | `src/align.py` | 112x112 canonical crop demo (save with `s`) |
 | `src/embed.py` | ArcFace ONNX embedding demo + embedder classes |
 | `src/enroll.py` | multi-sample enrollment of a person |
-| `src/recognize.py` | live multi-face recognition |
+| `src/recognize.py` | live multi-face recognition, with smile / blink badges |
+| `src/expressions.py` | smile + blink detection (EAR and mouth geometry) and its own live demo |
 | `src/evaluate.py` | threshold sweep to calibrate FAR / FRR |
 | `src/haar_5pt.py` | shared core: FaceMesh/Haar detection, landmark order, alignment math |
-| `src/tracker.py` | pan/tilt motor controller driver + face-tracking PID on a serial mount |
+| `src/ui.py` | shared overlay drawing: HUD panels, badges, meters, corner boxes |
+| `src/tracker.py` | pan/tilt motor controller driver, One Euro smoothing, face-tracking control loop |
 | `src/track.py` | live demo: spins the mount to find a face, then keeps it centered |
 
 ## Requirements
@@ -101,7 +104,12 @@ python -m src.landmarks    # 5-point landmarks
 python -m src.align        # canonical 112x112 crop
 python -m src.embed        # live 512-D embedding + heatmap
 python -m src.haar_5pt     # detector + landmarks overlay
+python -m src.expressions  # smile + blink detector
 ```
+
+All windows share one overlay style (`src/ui.py`): a translucent status panel,
+color-coded name badges, progress meters for the smile score, corner-bracket
+face boxes and a center crosshair as the tracking target.
 
 ### Enroll a person
 
@@ -138,7 +146,63 @@ python -m src.recognize
 | `q` | quit |
 | `r` | reload the database from disk |
 | `+` / `-` | loosen / tighten the distance threshold |
+| `e` | toggle the smile / blink overlay |
+| `c` | recalibrate the neutral face used by the expression detector |
 | `d` | toggle the debug overlay |
+| `f` | toggle the 180 degree rotation |
+
+The overlay states the scenario explicitly: `NO FACE IN FRAME` when nobody is
+visible, a green badge with the name for an enrolled identity, and a red
+`Unknown` badge for a face that does not match the database.
+
+Two decisions keep the window responsive on CPU-only Macs, where one ArcFace
+ResNet-50 pass is by far the most expensive step in the pipeline:
+
+- **CoreML when available.** `src/embed.py` asks onnxruntime for the CoreML
+  execution provider and falls back to CPU. On an Intel Mac that is ~2-2.5x
+  faster (~330 ms -> ~135 ms per embedding) for the same result: the two
+  providers agree to a cosine similarity above 0.9999. The live app prints the
+  providers in use on startup.
+- **Decisions are cached, not recomputed per frame.** `RecognitionCache`
+  re-embeds a face only when it has moved more than 18 px, when its entry is
+  older than 0.4 s, or when it first appears. A face that holds still reuses
+  the previous label while boxes, landmarks and expressions keep updating every
+  frame. Together these take the live recognize loop from ~5 fps to ~10 fps on
+  the development machine, and the cached entries are dropped the moment a face
+  leaves the frame.
+
+Press `r` (reload) or `+` / `-` (threshold) to invalidate the cache, so a
+changed decision is never shown from a stale match.
+
+### Smile and blink detection
+
+```bash
+python -m src.expressions
+```
+
+The same detector runs inside `src.recognize` and `src.track`. It works from
+the FaceMesh landmarks that are already being computed, so no extra model is
+needed:
+
+- **Blink** — the *Eye Aspect Ratio* (Soukupova et al.):
+
+  ```text
+  EAR = (|p2 - p6| + |p3 - p5|) / (2 * |p1 - p4|)
+  ```
+
+  The ratio is scale invariant and collapses when the eyelids close. A blink is
+  counted when the EAR stays below `0.68 x` the person's neutral EAR for two
+  consecutive frames, with a 0.35 s refractory period so one blink is never
+  counted twice.
+- **Smile** — two mouth features normalized by the inter-ocular distance:
+  mouth width (primary) and corner lift, which rises when the corners move up.
+  The first ~45 frames with a face visible define the neutral baseline, each
+  feature becomes a bounded gain against it, and lip aperture gates the score
+  down so talking or yawning is not reported as smiling.
+
+Because the baseline is measured per person, the same thresholds work across
+different faces, skin tones and lighting. Press `c` to recalibrate, `r` to zero
+the counters, `f` to flip the image and `q` to quit.
 
 ### Calibrate the threshold
 
@@ -158,8 +222,11 @@ pytest -v
 
 The suite covers the alignment math (synthetic landmark warps), the ONNX
 embedder (512-D, unit norm, stability), an end-to-end pipeline using a sample
-face image, and live camera behavior (a non-black-frame check that exercises
-the ffmpeg fallback). Tests that need the model or a camera skip cleanly when
+face image, live camera behavior (a non-black-frame check that exercises
+the ffmpeg fallback), the expression detector (EAR geometry, blink debouncing,
+per-user smile calibration, open-mouth rejection), the tracker (One Euro
+smoothing, deadband, command throttling, search and re-acquisition) and the
+overlay helpers. Tests that need the model or a camera skip cleanly when
 they are unavailable.
 
 ## Camera notes
@@ -210,6 +277,21 @@ A parallel port (a CP2102 USB-UART bridge) drives the servo pan/tilt mount.
 - a self-healing serial layer: if the device briefly drops off the USB bus,
   the controller re-opens the port and resyncs on the next move
 
+Smoothing and responsiveness are tuned together rather than traded off:
+
+- the face center passes through a **One Euro filter**, which is heavily
+  smoothed while the face is still and opens up its cutoff as soon as the face
+  moves, so the mount neither buzzes nor lags behind;
+- a **12 px deadband** ignores corrections too small to matter, and a small
+  pulse-width deadband plus a **~10 Hz command limit** stops the CP2102 from
+  being flooded with redundant writes (the bridge drops off the USB bus under
+  a write flood);
+- when the face is lost, the mount starts sweeping after **0.5 s** (instead of
+  waiting 1.5 s) and the period is 2.6 s;
+- detection is configured for *finding* a face quickly: single-face video mode,
+  a lower detection confidence (`0.30`), and after two empty frames one full
+  re-detection pass before returning to fast video tracking.
+
 Run it with:
 
 ```bash
@@ -217,8 +299,22 @@ python -m src.tracker   # cycle the mount to verify the controller is connected
 python -m src.track     # live spin-to-find + face tracking
 ```
 
+| key | action |
+| --- | --- |
+| `q` | quit |
+| `s` | toggle search mode |
+| `c` | re-center the mount |
+| `e` | toggle the smile / blink overlay |
+| `f` | toggle the 180 degree rotation |
+
 The tracker degrades gracefully when the mount is unplugged: tracking uses the
-smoothed face box either way.
+smoothed face box either way, and the status line reports the state instead of
+the app exiting.
+
+Because the mount is tuned for a CP2102 bridge that drops off the USB bus under
+a write flood, the write rate is deliberately capped. If the mount moves but the
+CP2102 disappears under load, check the cable and power first; a higher cap
+will not fix a marginal device.
 
 ## Repository layout
 

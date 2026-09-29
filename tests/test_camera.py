@@ -10,9 +10,28 @@ import pytest
 from src.camera import (
     Camera,
     auto_camera_index,
+    external_device_names,
     ffmpeg_device_names,
     is_builtin_camera_name,
     list_camera_indices,
+)
+
+
+def _usb_camera_connected() -> bool:
+    """True when an external (USB) camera is attached.
+
+    The demos deliberately refuse to fall back to the built-in camera, so tests
+    that open a :class:`Camera` must skip rather than fail when only the
+    built-in device is present.
+    """
+    try:
+        return bool(external_device_names())
+    except Exception:
+        return False
+
+
+needs_usb_camera = pytest.mark.skipif(
+    not _usb_camera_connected(), reason="no external USB camera connected"
 )
 
 
@@ -38,7 +57,7 @@ def test_auto_index_prefers_usb_camera():
         assert auto_camera_index() in externals
 
 
-@pytest.mark.skipif(not list_camera_indices(), reason="no camera available")
+@needs_usb_camera
 def test_usb_camera_captures_non_black_frames():
     means = []
     with Camera() as camera:
@@ -51,7 +70,7 @@ def test_usb_camera_captures_non_black_frames():
     assert max(means) >= 3.0, "camera delivered only black frames"
 
 
-@pytest.mark.skipif(not list_camera_indices(), reason="no camera available")
+@needs_usb_camera
 def test_ffmpeg_reader_directly():
     from src.camera import FFmpegFrameReader, ffmpeg_available
 

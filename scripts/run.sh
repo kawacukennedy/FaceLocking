@@ -7,6 +7,8 @@
 #   bash scripts/run.sh <module> [args...]
 #   bash scripts/run.sh track          # -> python -m src.track
 #   bash scripts/run.sh enroll         # -> python -m src.enroll
+#   bash scripts/run.sh recognize      # -> python -m src.recognize
+#   bash scripts/run.sh expressions    # -> python -m src.expressions
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

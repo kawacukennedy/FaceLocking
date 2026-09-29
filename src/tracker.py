@@ -22,10 +22,10 @@ Run the standalone test with::
 from __future__ import annotations
 
 import glob
-import subprocess
 import time
-from pathlib import Path
 from typing import Callable, List, Optional, Tuple
+
+import numpy as np
 
 try:
     import serial
@@ -139,6 +139,54 @@ def clamp_pwm(value: int, min_pwm: int = SERVO_MIN, max_pwm: int = SERVO_MAX) ->
     return int(max(min_pwm, min(max_pwm, round(value))))
 
 
+class OneEuroFilter:
+    """Adaptive low-pass filter: smooth when still, responsive when moving.
+
+    A plain EMA has to choose between jitter and lag. The One Euro filter raises
+    its cutoff with the observed speed, so a stationary face is smoothed while a
+    fast move is followed with almost no delay — what face tracking needs.
+
+    Args:
+        min_cutoff: Cutoff frequency at zero speed (Hz). Lower = smoother.
+        beta: Speed coefficient; higher = less lag on fast motion.
+        d_cutoff: Cutoff for the speed estimate (Hz).
+    """
+
+    def __init__(self, min_cutoff: float = 1.2, beta: float = 0.02, d_cutoff: float = 1.0) -> None:
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self._x: Optional[float] = None
+        self._dx: float = 0.0
+        self._t: Optional[float] = None
+
+    @staticmethod
+    def _alpha(cutoff: float, dt: float) -> float:
+        tau = 1.0 / (2.0 * np.pi * max(cutoff, 1e-6))
+        return 1.0 / (1.0 + tau / max(dt, 1e-6))
+
+    def reset(self) -> None:
+        self._x = None
+        self._dx = 0.0
+        self._t = None
+
+    def filter(self, value: float, timestamp: Optional[float] = None) -> float:
+        """Return the filtered value for ``value`` sampled at ``timestamp``."""
+        t = time.time() if timestamp is None else float(timestamp)
+        if self._x is None or self._t is None:
+            self._x, self._t = float(value), t
+            return self._x
+        dt = max(1e-3, t - self._t)
+        self._t = t
+        dx = (float(value) - self._x) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        self._dx += a_d * (dx - self._dx)
+        cutoff = self.min_cutoff + self.beta * abs(self._dx)
+        a = self._alpha(cutoff, dt)
+        self._x += a * (float(value) - self._x)
+        return self._x
+
+
 class PanTiltController:
     """Smooth pan/tilt driver with position clamping and slew limiting.
 
@@ -250,15 +298,22 @@ class PanTiltController:
 class FaceTracker:
     """Keeps the largest detected face centered by steering the pan/tilt mount.
 
-    Works purely from a ``(x, y, w, h)`` face box and the frame size. Uses a
-    proportional controller on the face-center error, then maps the error to a
-    pulse-width target. When no face is seen for ``search_delay_s`` seconds it
-    switches to a search sweep that rotates the mount until a face reappears.
+    Works purely from a ``(x, y, w, h)`` face box and the frame size. The face
+    center is smoothed with a :class:`OneEuroFilter` (no jitter, no lag), a
+    proportional controller maps the remaining error to pulse-width targets, and
+    a deadband stops micro-corrections that would make the mount buzz. Commands
+    are rate limited because the CP2102 bridge drops off the USB bus under a
+    flood of writes; when no face is visible the mount runs a fast search sweep
+    until one reappears.
 
     Args:
         motor: An optional :class:`PanTiltController`.
         k_pan, k_tilt: Proportional gains (pulse width change per pixel).
         search_delay_s: Seconds without a face before sweeping.
+        deadband_px: Error smaller than this is ignored (pixels).
+        command_interval_s: Minimum time between two motor commands.
+        command_deadband_us: Change required before a command is sent.
+        min_cutoff, beta: One Euro filter tuning (lower cutoff = smoother).
     """
 
     def __init__(
@@ -266,21 +321,63 @@ class FaceTracker:
         motor: Optional[PanTiltController] = None,
         k_pan: float = 2.5,
         k_tilt: float = 2.5,
-        search_delay_s: float = 1.5,
+        search_delay_s: float = 0.5,
+        deadband_px: float = 12.0,
+        command_interval_s: float = 0.09,
+        command_deadband_us: int = 6,
+        min_cutoff: float = 1.4,
+        beta: float = 0.02,
     ) -> None:
         self.motor = motor
         self.k_pan = float(k_pan)
         self.k_tilt = float(k_tilt)
         self.search_delay_s = float(search_delay_s)
+        self.deadband_px = float(deadband_px)
+        self.command_interval_s = float(command_interval_s)
+        self.command_deadband_us = int(command_deadband_us)
         self.last_seen = time.time()
         self.searching = False
         self.center_pan = motor.center_pan if motor else SERVO_CENTER
         self.center_tilt = motor.center_tilt if motor else SERVO_CENTER
         self._sweep_start: float = 0.0
-        self.sweep_period_s = 4.0
-        self.sweep_amp_pan = 420
-        self.sweep_amp_tilt = 180
+        self.sweep_period_s = 2.6
+        self.sweep_amp_pan = 460
+        self.sweep_amp_tilt = 200
 
+        self._flt_x = OneEuroFilter(min_cutoff=min_cutoff, beta=beta)
+        self._flt_y = OneEuroFilter(min_cutoff=min_cutoff, beta=beta)
+        self._flt_w = OneEuroFilter(min_cutoff=min_cutoff, beta=beta)
+        self._last_command_at = 0.0
+        self._last_command: Optional[Tuple[int, int]] = None
+        self.error = (0.0, 0.0)
+        self.face_center = (0.0, 0.0)
+
+    # ------------------------------------------------------------------ motor
+    def _command_motor(self, pan: float, tilt: float, slew_limit: int = 24) -> bool:
+        """Send a command at most every ``command_interval_s``, if it matters."""
+        if self.motor is None:
+            return False
+        pan_i, tilt_i = int(round(pan)), int(round(tilt))
+        now = time.time()
+        if self._last_command is not None:
+            d_pan = abs(pan_i - self._last_command[0])
+            d_tilt = abs(tilt_i - self._last_command[1])
+            if (
+                max(d_pan, d_tilt) < self.command_deadband_us
+                or (now - self._last_command_at) < self.command_interval_s
+            ):
+                return False
+        self.motor.move(pan_i, tilt_i, slew_limit=slew_limit)
+        self._last_command = (pan_i, tilt_i)
+        self._last_command_at = now
+        return True
+
+    def _reset_filters(self) -> None:
+        self._flt_x.reset()
+        self._flt_y.reset()
+        self._flt_w.reset()
+
+    # ------------------------------------------------------------------- API
     def update(
         self,
         face_box: Optional[Tuple[int, int, int, int]],
@@ -295,19 +392,29 @@ class FaceTracker:
         """
         if face_box is not None:
             x, y, w, h = face_box
-            face_cx = x + w / 2.0
-            face_cy = y + h / 2.0
+            t = time.time()
+            if self.searching:
+                # Re-acquired: forget the sweep history so tracking resumes cleanly.
+                self._reset_filters()
+            self.searching = False
+            self.last_seen = t
+
+            face_cx = self._flt_x.filter(x + w / 2.0, t)
+            face_cy = self._flt_y.filter(y + h / 2.0, t)
+            self._flt_w.filter(float(w), t)
+            self.face_center = (face_cx, face_cy)
+
             err_x = face_cx - frame_w / 2.0
             err_y = face_cy - frame_h / 2.0
-            self.last_seen = time.time()
-            self.searching = False
+            self.error = (err_x, err_y)
 
-            if self.motor is not None:
-                self.motor.move(
+            if abs(err_x) > self.deadband_px or abs(err_y) > self.deadband_px:
+                self._command_motor(
                     self.center_pan - err_x * self.k_pan,
                     self.center_tilt + err_y * self.k_tilt,
                 )
-            return False, f"Track err=({err_x:+.0f},{err_y:+.0f})"
+            state = "locked" if max(abs(err_x), abs(err_y)) <= self.deadband_px else "tracking"
+            return False, f"{state} err=({err_x:+.0f},{err_y:+.0f})"
         return self._search(frame_w, frame_h)
 
     def _search(self, frame_w: int, frame_h: int) -> Tuple[bool, str]:
@@ -316,6 +423,7 @@ class FaceTracker:
         if not self.searching:
             self.searching = True
             self._sweep_start = time.time()
+            self._last_command = None
         age = (time.time() - self._sweep_start) % self.sweep_period_s
         phase = age / self.sweep_period_s
         pan = self.center_pan + self.sweep_amp_pan * (
@@ -323,8 +431,7 @@ class FaceTracker:
         )
         tilt_delta = self.sweep_amp_tilt * (0.5 - abs(0.5 - phase))
         tilt = clamp_pwm(self.center_tilt + tilt_delta)
-        if self.motor is not None:
-            self.motor.move(int(pan), int(tilt), slew_limit=30)
+        self._command_motor(int(pan), int(tilt), slew_limit=40)
         return True, "Searching... sweeping"
 
 

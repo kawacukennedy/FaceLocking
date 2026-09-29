@@ -23,7 +23,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import cv2
 import numpy as np
@@ -113,21 +113,26 @@ def draw_status(
     needed: int,
     auto: bool,
     msg: str = "",
+    has_face: bool = False,
 ) -> None:
+    """Top-left enrollment panel: identity, sample counts, state and keys."""
+    from . import ui
+
     total = base_count + new_count
-    lines = [
-        f"ENROLL: {name}",
-        f"Existing: {base_count} | New: {new_count} | Total: {total} / {needed}",
-        f"Auto: {'ON' if auto else 'OFF'} (toggle: a)",
-        "SPACE=capture | s=save | r=reset NEW | q=quit",
-    ]
+    lines = [("ENROLLMENT", ui.WHITE), (name, ui.CYAN)]
+    lines.append(
+        (f"samples {total} / {needed}   (existing {base_count}, new {new_count})", ui.GREEN)
+    )
+    lines.append((f"auto-capture {'ON' if auto else 'OFF'}", ui.GREEN if auto else ui.GRAY))
+    if not has_face:
+        lines.append(("NO FACE IN FRAME - look at the camera", ui.YELLOW))
     if msg:
-        lines.insert(0, msg)
-    y = 30
-    for line in lines:
-        cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 2, cv2.LINE_AA)
-        y += 26
+        lines.append((msg, ui.WHITE))
+    lines.append(("SPACE capture   s save   a auto   r reset   f flip   q quit", ui.GRAY))
+    ui.draw_hud(frame, lines, x=16, y=20, scale=0.55)
+    if needed:
+        ui.draw_meter(frame, min(1.0, total / max(1, needed)), (16, 20 + 26 * len(lines) + 6),
+                      width=220, height=8, color=ui.GREEN)
 
 
 def main() -> None:
@@ -174,13 +179,18 @@ def main() -> None:
                 if not ok:
                     break
                 vis = frame.copy()
+                from . import ui
+
+                ui.vignette(vis)
                 aligned = None
                 faces = detector.detect(frame, max_faces=1)
                 if faces:
                     face = faces[0]
-                    cv2.rectangle(vis, (face.x1, face.y1), (face.x2, face.y2), (0, 255, 0), 2)
+                    ui.draw_corner_box(vis, (face.x1, face.y1, face.x2 - face.x1, face.y2 - face.y1))
                     for (px, py) in face.kps.astype(int):
-                        cv2.circle(vis, (int(px), int(py)), 3, (0, 255, 0), -1)
+                        cv2.circle(vis, (int(px), int(py)), 3, ui.GREEN, -1)
+                    ui.draw_badge(vis, "face ready - press SPACE", (face.x2, face.y1 - 8),
+                                  color=ui.GREEN, scale=0.45, anchor="bottom-right")
                     aligned, _ = align_face_5pt(frame, face.kps, out_size=(112, 112))
                     cv2.imshow(cfg.window_aligned, aligned)
                 else:
@@ -195,7 +205,7 @@ def main() -> None:
                         cv2.imwrite(str(person_dir / f"{int(now * 1000)}.jpg"), aligned)
 
                 draw_status(vis, name, len(base_samples), len(new_samples),
-                            cfg.samples_needed, auto, status_msg)
+                            cfg.samples_needed, auto, status_msg, has_face=bool(faces))
                 cv2.imshow(cfg.window_main, vis)
 
                 key = cv2.waitKey(1) & 0xFF

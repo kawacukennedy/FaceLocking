@@ -18,6 +18,7 @@ recognition on its own.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -207,6 +208,11 @@ class Haar5ptDetector:
             the landmark consistency checks then filter).
         scale_factor: Haar down-scaling step (lower is more thorough).
         smooth_alpha: Exponential smoothing factor for box/landmark jitter.
+        max_num_faces: Maximum faces tracked by MediaPipe.
+        min_detection_confidence: FaceMesh detection threshold; lower values
+            find distant or low-contrast faces sooner.
+        reacquire_after_frames: Consecutive empty frames that trigger one
+            full re-detection pass before falling back to video tracking.
         debug: Print rejection reasons.
     """
 
@@ -217,6 +223,9 @@ class Haar5ptDetector:
         min_neighbors: int = 2,
         scale_factor: float = 1.05,
         smooth_alpha: float = 0.80,
+        max_num_faces: int = 5,
+        min_detection_confidence: float = 0.35,
+        reacquire_after_frames: int = 2,
         debug: bool = False,
     ) -> None:
         self.debug = bool(debug)
@@ -224,6 +233,9 @@ class Haar5ptDetector:
         self.min_neighbors = int(min_neighbors)
         self.scale_factor = float(scale_factor)
         self.smooth_alpha = float(smooth_alpha)
+        self.max_num_faces = int(max_num_faces)
+        self.min_detection_confidence = float(min_detection_confidence)
+        self.reacquire_after_frames = int(reacquire_after_frames)
 
         if haar_xml is None:
             haar_xml = cv2.data.haarcascades + "haarcascade_frontalface_alt.xml"
@@ -237,16 +249,49 @@ class Haar5ptDetector:
                 f"Import failed: {MP_IMPORT_ERROR}\n"
                 "Install with: pip install mediapipe==0.10.21"
             )
-        self.mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=5,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.4,
-        )
+        self._mesh_video_mode = False
+        self._empty_frames = 0
+        self._redetect_next = False
+        self.mesh = self._build_mesh(static_image_mode=False)
 
         self._prev_box: Optional[np.ndarray] = None
         self._prev_kps: Optional[np.ndarray] = None
+
+    # ------------------------------------------------------------------- mesh
+    def _build_mesh(self, static_image_mode: bool):
+        """Create a FaceMesh configured for video tracking or one-shot detection."""
+        return mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=static_image_mode,
+            max_num_faces=self.max_num_faces,
+            refine_landmarks=True,
+            min_detection_confidence=self.min_detection_confidence,
+            min_tracking_confidence=0.35 if not static_image_mode else self.min_detection_confidence,
+        )
+
+    def _ensure_mesh(self, full_redetect: bool) -> None:
+        """Keep the mesh in the mode the current frame needs.
+
+        Video mode is fast and stable but can hold onto a lost track for several
+        frames. After ``reacquire_after_frames`` empty frames the detector pays
+        for one full re-detection pass (image mode), which is noticeably quicker
+        at finding a face that walked back into view, then returns to video mode.
+        """
+        want_static = bool(full_redetect) or self._redetect_next
+        if want_static == self._mesh_video_mode:
+            return
+        self.mesh.close()
+        self.mesh = self._build_mesh(static_image_mode=want_static)
+        self._mesh_video_mode = not want_static
+        self._redetect_next = False
+
+    def _note_detection_result(self, found: bool) -> None:
+        """Track consecutive empty frames and arm a redetection when needed."""
+        if found:
+            self._empty_frames = 0
+            return
+        self._empty_frames += 1
+        if self.reacquire_after_frames > 0 and self._empty_frames >= self.reacquire_after_frames:
+            self._redetect_next = True
 
     def haar_faces(self, gray: np.ndarray) -> np.ndarray:
         """Return Haar boxes as a ``(N, 4)`` int32 array of ``(x, y, w, h)``."""
@@ -383,9 +428,11 @@ class Haar5ptDetector:
         """
         height, width = frame_bgr.shape[:2]
 
+        self._ensure_mesh(full_redetect=False)
         cores = self._facemesh_global_5pt(frame_bgr)
         if not cores:
             cores = self._haar_path_kps(frame_bgr)
+        self._note_detection_result(bool(cores))
 
         if not cores:
             return []
@@ -420,36 +467,60 @@ class Haar5ptDetector:
         return results[:max_faces]
 
 
-def draw_face_overlay(frame: np.ndarray, face: FaceKpsBox, color=(0, 255, 0)) -> None:
-    """Draw a bounding box and the five landmark points in place."""
-    cv2.rectangle(frame, (face.x1, face.y1), (face.x2, face.y2), color, 2)
-    for (px, py) in face.kps.astype(int):
-        cv2.circle(frame, (int(px), int(py)), 3, color, -1)
-
-
 def main() -> None:
     """Standalone demo: live Haar + 5-point landmark preview."""
+    from . import ui
     from .camera import Camera
 
     detector = Haar5ptDetector(debug=True)
     with Camera() as camera:
-        print("Haar + 5pt (FaceMesh) test. Press 'q' to quit.")
+        print(camera.describe())
+        print("Face + 5-point landmark test. q=quit, f=flip.")
+        t0 = time.time()
+        frames = 0
+        fps = None
         while True:
             ok, frame = camera.read()
             if not ok:
                 break
+            now = time.time()
             faces = detector.detect(frame, max_faces=1)
             vis = frame.copy()
+            ui.vignette(vis)
+            h, w = vis.shape[:2]
+
+            frames += 1
+            if now - t0 >= 1.0:
+                fps = frames / (now - t0)
+                frames, t0 = 0, now
+
             if faces:
-                draw_face_overlay(vis, faces[0])
-                cv2.putText(vis, "OK", (faces[0].x1, max(0, faces[0].y1 - 8)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                face = faces[0]
+                color = ui.GREEN
+                ui.draw_corner_box(vis, (face.x1, face.y1, face.x2 - face.x1, face.y2 - face.y1),
+                                   color=color)
+                for i, (px, py) in enumerate(face.kps.astype(int)):
+                    cv2.circle(vis, (int(px), int(py)), 3, color, -1)
+                labels = ("left eye", "right eye", "nose", "mouth L", "mouth R")
+                for (px, py), label in zip(face.kps.astype(int), labels):
+                    ui.draw_text(vis, label, (int(px) + 6, int(py) - 6), scale=0.38,
+                                 color=ui.GRAY, thickness=1)
+                ui.draw_badge(vis, "face detected", (face.x2, face.y1 - 8), color=color,
+                              scale=0.45, anchor="bottom-right")
             else:
-                cv2.putText(vis, "no face", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.9, (0, 0, 255), 2)
+                ui.draw_hud(vis, [("NO FACE IN FRAME", ui.YELLOW)])
+
+            header = "HAAR + 5PT LANDMARKS"
+            if fps is not None:
+                header += f"   fps={fps:.1f}"
+            ui.draw_hud(vis, [(header, ui.CYAN)], y=h - 46)
+            ui.draw_text(vis, "q quit   f flip", (16, h - 16), scale=0.45, color=ui.GRAY)
             cv2.imshow("haar_5pt", vis)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            if key == ord("f"):
+                camera.toggle_flip()
 
 
 if __name__ == "__main__":
